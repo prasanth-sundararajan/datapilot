@@ -62,6 +62,7 @@ answer with charts, the re-runnable `analysis.py` and a one-page PDF.
 | 10 | Re-running analysis.py gives exactly the same numbers | ![](docs/screenshots/08_reproducibility_check.jpg) |
 | 11 | Follow-up question continues the same session | ![](docs/screenshots/10_follow_up_question.jpg) |
 | 12 | Follow-up answer with its own chart | ![](docs/screenshots/11_follow_up_answer.jpg) |
+| 13 | Deployed on the VPS (Docker sandbox, daily run cap), live gpt-4.1 run approved | ![](docs/screenshots/12_deployed_vps.jpg) |
 
 Screenshots 1-4 and 7-12 are from a **live gpt-4.1 run**. Screenshots 5-6 are from **demo mode**, where a
 scripted model makes the classic mistake on purpose (the traceback and the fix really run). In live runs the
