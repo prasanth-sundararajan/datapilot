@@ -1,0 +1,11 @@
+# DataPilot route, imported into ReviewLens' Caddy site block on the shared VPS.
+# Copy to /opt/reviewlens/sites.d/ and reload Caddy (see README "Deploy on the Hostinger VPS").
+redir /techstack/datapilot /techstack/datapilot/ 308
+@datapilot path /techstack/datapilot/*
+handle @datapilot {
+	# Caddy matches paths case-insensitively but Streamlit does not: send other
+	# spellings (e.g. /techstack/DataPilot/) to the exact path.
+	@datapilot_other_case not path_regexp ^/techstack/datapilot/
+	redir @datapilot_other_case /techstack/datapilot/ 302
+	reverse_proxy datapilot:8501
+}

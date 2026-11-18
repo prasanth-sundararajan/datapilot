@@ -1,0 +1,20 @@
+# Production on the VPS that already runs ReviewLens behind Caddy.
+# The app is served at https://<APP_DOMAIN>/techstack/datapilot/, reached only through
+# ReviewLens' Caddy over the shared Docker network (no public port).
+# Usage on the server:
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+services:
+  datapilot:
+    ports: !reset []
+    expose:
+      - "8501"
+    environment:
+      - STREAMLIT_SERVER_BASE_URL_PATH=${APP_PATH:-techstack/datapilot}
+    networks:
+      - default
+      - proxy
+
+networks:
+  proxy:
+    external: true
+    name: ${PROXY_NETWORK:-reviewlens_default}

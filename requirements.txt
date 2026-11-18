@@ -1,0 +1,11 @@
+autogen-agentchat==0.7.5
+autogen-ext[openai,anthropic,docker]==0.7.5
+streamlit>=1.40
+# pinned: newer pandas/pyarrow DLLs are blocked by Windows Smart App Control on this machine
+pandas==2.2.3
+numpy==2.1.3
+pyarrow==17.0.0
+matplotlib
+openpyxl
+python-dotenv
+fpdf2

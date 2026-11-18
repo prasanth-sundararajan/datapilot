@@ -1,0 +1,22 @@
+[server]
+maxUploadSize = 25
+
+[browser]
+gatherUsageStats = false
+
+# DataPilot palette: deep ink surfaces + five agent colours (see ui.py)
+[theme]
+base = "dark"
+primaryColor = "#8B5CF6"              # violet: buttons, focus, toggles
+backgroundColor = "#0B1020"
+secondaryBackgroundColor = "#151B33"
+textColor = "#E8ECFF"
+linkColor = "#38BDF8"
+borderColor = "#262E52"
+showWidgetBorder = true
+baseRadius = "0.7rem"
+font = "sans-serif"
+
+[theme.sidebar]
+backgroundColor = "#0F1530"
+secondaryBackgroundColor = "#1A2244"
