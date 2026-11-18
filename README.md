@@ -116,7 +116,13 @@ cp deploy/datapilot.caddy /opt/reviewlens/sites.d/
 docker exec reviewlens-caddy-1 caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile
 ```
 
-App: `https://<APP_DOMAIN>/techstack/datapilot/`. Update later with `git pull` and the same `docker compose` command.
+App: `https://<APP_DOMAIN>/techstack/datapilot/`.
+
+### Update the server later
+
+```bash
+cd /opt/datapilot && git pull && docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+```
 
 ## Project layout
 
