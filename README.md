@@ -105,6 +105,12 @@ Real files from the live run: [`docs/sample_output/`](docs/sample_output) (`anal
 August to Rs 53.55 L in September (−Rs 19.68 L, −26.87%). The South region caused Rs 10.17 L of it (51.69%),
 mainly Smartwatch Lite (−4.28 L), Earbuds X2 (−2.70 L) and BT Speaker Mini (−2.37 L).
 
+## Daily run limit
+
+The public app spends on the OpenAI key, so it allows **3 live runs per day** (`MAX_RUNS_PER_DAY`; `0` = no
+limit). Each question, follow-up or "let the agents continue" is one run, counted when it starts. The count
+resets at midnight India time; demo mode is free and not counted. The sidebar shows runs used and left.
+
 ## Done checklist
 
 - [x] At least one run shows the agents fixing a code error on their own (live: 4 of 6 messy-data runs; see "Self-correction, live")
@@ -145,7 +151,7 @@ ReviewLens' Caddy serves the domain and imports route files from `/opt/reviewlen
 ```bash
 git clone https://github.com/prasanth-sundararajan/datapilot.git /opt/datapilot
 cd /opt/datapilot
-cp .env.example .env    # OPENAI_API_KEY, LLM_MODEL=gpt-4.1, MAX_RUNS_PER_DAY=40
+cp .env.example .env    # OPENAI_API_KEY, LLM_MODEL=gpt-4.1, MAX_RUNS_PER_DAY=3
 docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
 cp deploy/datapilot.caddy /opt/reviewlens/sites.d/
 docker exec reviewlens-caddy-1 caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile
@@ -169,7 +175,7 @@ config.py           LLM provider/model from .env (OpenAI, Anthropic, Groq, Gemin
 data_utils.py       stage CSV/Excel into the sandbox, schema for the agents
 report.py           parse the answer, PDF export, reproducibility re-run
 demo.py             scripted model for offline demo / tests
-usage_guard.py      MAX_RUNS_PER_DAY cap for public deployments
+usage_guard.py      daily run limit (MAX_RUNS_PER_DAY, default 3, resets at midnight IST)
 cli.py              terminal version with UserProxyAgent
 test_offline.py     checklist tests (no API key)
 Dockerfile, docker-compose*.yml, deploy/datapilot.caddy   VPS deployment

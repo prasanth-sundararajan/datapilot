@@ -93,7 +93,11 @@ with st.sidebar:
                                help="Needs Docker and the image: docker build -t datapilot-sandbox -f Dockerfile.sandbox .")
     left = usage_guard.runs_left(SANDBOX_ROOT)
     if left is not None and not demo_mode:
-        st.caption(f"Live runs left today: **{left}**")
+        lim = usage_guard.limit()
+        st.markdown("**Daily runs**")
+        st.progress(min((lim - left) / lim, 1.0))
+        st.caption(f"**{lim - left}** of **{lim}** live runs used today · {left} left. "
+                   "Each question or follow-up is one run. Resets at midnight (India time).")
     if st.button("🔄 New session", use_container_width=True):
         reset_session()
         st.rerun()
@@ -336,7 +340,8 @@ typed = st.chat_input("Demo mode answers the sample question once. Turn it off t
 question = typed or pending_q
 
 if (question or pending_c) and not demo_mode and not usage_guard.take_run(SANDBOX_ROOT):
-    st.error("Today's limit of live agent runs on this server is reached. Try demo mode, or come back tomorrow.")
+    st.warning(f"**Daily limit reached.** All {usage_guard.limit()} live runs for today have been used. "
+               "New runs open again at midnight (India time). Demo mode still works.")
 elif question or pending_c:
     if question:
         if ss.turns:  # follow-up: the human's message goes through the UserProxyAgent

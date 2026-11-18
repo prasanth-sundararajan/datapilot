@@ -1,6 +1,12 @@
-"""Simple daily cap on live agent runs, so a public deployment can't run up the API bill.
+"""Daily run limit: at most MAX_RUNS_PER_DAY live agent runs per day (default 3).
 
-MAX_RUNS_PER_DAY (env, default 0 = unlimited). Counted per server in sandbox/_usage.json.
+- A run (a question, a follow-up, or "let the agents continue") is counted the moment it starts.
+- The count resets at midnight India time (IST, UTC+5:30).
+- Demo mode spends nothing and is not counted.
+- Stored in SANDBOX_DIR/_usage.json, updated under a lock.
+
+Settings (environment):
+    MAX_RUNS_PER_DAY    runs allowed per day, default 3 (0 = no limit)
 """
 from __future__ import annotations
 
@@ -10,46 +16,50 @@ import os
 import threading
 from pathlib import Path
 
+IST = dt.timezone(dt.timedelta(hours=5, minutes=30))
 _lock = threading.Lock()
 
 
-def _limit() -> int:
+def limit() -> int:
     try:
-        return int(os.getenv("MAX_RUNS_PER_DAY", "0"))
+        return max(0, int(os.getenv("MAX_RUNS_PER_DAY", "3")))
     except ValueError:
-        return 0
+        return 3
+
+
+def _today() -> str:
+    return dt.datetime.now(IST).date().isoformat()
 
 
 def _file(root: Path) -> Path:
     return root / "_usage.json"
 
 
-def runs_left(root: Path) -> int | None:
-    limit = _limit()
-    if limit <= 0:
-        return None
-    today = dt.date.today().isoformat()
+def _used(root: Path) -> int:
     try:
-        data = json.loads(_file(root).read_text())
+        return int(json.loads(_file(root).read_text()).get(_today(), 0))
     except Exception:
-        data = {}
-    return max(0, limit - int(data.get(today, 0)))
+        return 0
+
+
+def runs_used(root: Path) -> int:
+    return _used(root)
+
+
+def runs_left(root: Path) -> int | None:
+    lim = limit()
+    return None if lim <= 0 else max(0, lim - _used(root))
 
 
 def take_run(root: Path) -> bool:
-    """Reserve one run. Returns False when today's cap is reached."""
-    limit = _limit()
-    if limit <= 0:
+    """Reserve one run. Returns False when today's limit is reached."""
+    lim = limit()
+    if lim <= 0:
         return True
-    today = dt.date.today().isoformat()
     with _lock:
         root.mkdir(parents=True, exist_ok=True)
-        try:
-            data = json.loads(_file(root).read_text())
-        except Exception:
-            data = {}
-        used = int(data.get(today, 0))
-        if used >= limit:
+        used = _used(root)
+        if used >= lim:
             return False
-        _file(root).write_text(json.dumps({today: used + 1}))
+        _file(root).write_text(json.dumps({_today(): used + 1}))
         return True
