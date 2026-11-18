@@ -51,7 +51,9 @@ async def main():
     data = stage_data_file(a.data, run_dir)
     schema = describe_data(data)
     client = demo.demo_model_client(data) if a.demo else config.make_model_client()
-    sess = await build_session(client, run_dir, data, schema, a.max_messages, a.routing, a.docker)
+    roles = {} if a.demo else {r: config.make_model_client(m) for r in ('planner', 'coder', 'reviewer')
+                                if (m := config.role_model(r))}
+    sess = await build_session(client, run_dir, data, schema, a.max_messages, a.routing, a.docker, roles)
     human = UserProxyAgent("User", description="The business owner who approves the final answer.")
 
     question, task = a.question, build_task(a.question, schema)

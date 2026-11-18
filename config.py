@@ -62,8 +62,20 @@ def describe() -> str:
     return f"{p} / {os.getenv('LLM_MODEL') or default_model}"
 
 
-def make_model_client():
-    """Return an AutoGen ChatCompletionClient for the configured provider."""
+def role_model(role: str) -> str | None:
+    """Per-agent model override, e.g. CODER_MODEL=gpt-4o-mini (cheap, fast coder; strong reviewer)."""
+    v = os.getenv(f"{role.upper()}_MODEL")
+    return v.strip() if v and v.strip() else None
+
+
+def describe_roles() -> str:
+    roles = {r: role_model(r) for r in ("planner", "coder", "reviewer")}
+    extra = [f"{r} {m}" for r, m in roles.items() if m]
+    return describe() + (f" · {', '.join(extra)}" if extra else "")
+
+
+def make_model_client(model: str | None = None):
+    """Return an AutoGen ChatCompletionClient for the configured provider (optionally a specific model)."""
     provider = detect_provider()
     if provider is None:
         raise RuntimeError(
@@ -74,7 +86,7 @@ def make_model_client():
         raise RuntimeError(f"Unknown LLM_PROVIDER '{provider}'. Use one of: {', '.join(_PROVIDERS)}")
 
     keys, default_model, base_url = _PROVIDERS[provider]
-    model = os.getenv("LLM_MODEL") or default_model
+    model = model or os.getenv("LLM_MODEL") or default_model
     api_key = _first_env(keys) if keys else "ollama"
     base_url = os.getenv("LLM_BASE_URL") or os.getenv("OPENAI_BASE_URL") or base_url
     temperature = float(os.getenv("LLM_TEMPERATURE", "0"))

@@ -46,6 +46,38 @@ answer with charts, the re-runnable `analysis.py` and a one-page PDF.
 | pandas, matplotlib (numbers from code, not from the LLM) | Coder scripts; the LLM only sees the schema and 5 sample rows |
 | Streamlit chat interface | `app.py`, `ui.py`, `.streamlit/config.toml` |
 
+## Self-correction, live (gpt-4.1, messy real-world Excel)
+
+Clean demo data rarely makes gpt-4.1 fail, so the self-correcting loop has to prove itself on realistic data.
+`sample_data/sales_2026_messy.xlsx` (the **🧪 Messy real-world export** button) holds the same sales as a typical
+shop/ERP export: three date formats (`2026-08-02`, `02/08/2026` day-first, `02-Aug-2026`), prices as text
+(`₹1,999`), discounts as `10%` or `0.10`, region spelling variants (`South`, `south `, `SOUTH`), blank cells, and a
+second `Region_Targets` sheet.
+
+The sandbox gives the Coder a `data_check()` it must call after cleaning, and it also checks every saved chart.
+These turn **silent wrong numbers into real errors**:
+
+| Sandbox check | Fails when |
+|---|---|
+| rows lost | more than 2% of rows dropped by the cleaning |
+| dates | values that did not parse; ISO dates with day/month swapped; `dd/mm/yyyy` read month-first (compared with a pristine copy of the loaded file) |
+| names | the same group value spelled two ways (`North` / `north `) |
+| charts | a saved chart has no title, x or y label, or no units on the y axis |
+
+Question: *"Using both sheets, which region missed its September revenue target by the most, and by how much?"*
+
+| Step | Screenshot |
+|---|---|
+| Live error 1: `DATA CHECK failed: 8310 values in 'Order Date' could not be parsed` | ![](docs/screenshots/13_live_selffix_1_dates_unparsed.jpg) |
+| Coder fixes it, live error 2: `1,496 ISO dates were parsed with day and month swapped` | ![](docs/screenshots/14_live_selffix_2_day_month_swap.jpg) |
+| Coder fixes it again: DATA CHECK passed, correct numbers | ![](docs/screenshots/15_live_selffix_3_fixed_ok.jpg) |
+| Approved answer: **North, Rs 2.34 L short** (correct), errors self-fixed counter | ![](docs/screenshots/16_live_selffix_answer.jpg) |
+
+**Measured (6 final live runs on the messy data):** 6 of 6 correct, 4 of 6 fixed at least one real error on their
+own. Before the sandbox checks, the same runs were often **approved with wrong numbers** (e.g. 67% of rows silently
+dropped, or "North short Rs 5.27 L" instead of 2.34 L). The checks also caught a `KeyError: 'region'` and missing
+chart labels in other runs.
+
 ## Expected outputs (screenshots)
 
 | # | Expected output | Screenshot |
@@ -54,8 +86,8 @@ answer with charts, the re-runnable `analysis.py` and a one-page PDF.
 | 2 | Watch the agents work live (animated pipeline) | ![](docs/screenshots/02_agents_working.jpg) |
 | 3 | Planner plan → Coder code → Executor run | ![](docs/screenshots/03_plan_code_run.jpg) |
 | 4 | Numbers calculated by code (category, region, products) | ![](docs/screenshots/04_executor_numbers.jpg) |
-| 5 | **ERROR then Fixed**: real `KeyError: 'revenue'`, Coder repairs its own code | ![](docs/screenshots/09_self_correction_error_fix.jpg) |
-| 6 | Reviewer feedback ("chart has no axis labels") → Coder adds labels | ![](docs/screenshots/09b_reviewer_feedback_fix.jpg) |
+| 5 | **ERROR then Fixed**: live data-check failures fixed by the Coder (see above); demo mode: `KeyError: 'revenue'` | ![](docs/screenshots/14_live_selffix_2_day_month_swap.jpg) |
+| 6 | Demo mode: scripted mistake, real traceback, Coder repairs its own code | ![](docs/screenshots/09_self_correction_error_fix.jpg) |
 | 7 | Reviewer CHECKs every part of the question, then APPROVED | ![](docs/screenshots/05_reviewer_approved.jpg) |
 | 8 | Final answer: exact numbers, where it came from, files, suggested next question | ![](docs/screenshots/06_final_answer.jpg) |
 | 9 | Charts as PNG + downloads (analysis.py, charts, PDF) + human Approve | ![](docs/screenshots/07_charts_files_approval.jpg) |
@@ -64,9 +96,8 @@ answer with charts, the re-runnable `analysis.py` and a one-page PDF.
 | 12 | Follow-up answer with its own chart | ![](docs/screenshots/11_follow_up_answer.jpg) |
 | 13 | Deployed on the VPS (Docker sandbox, daily run cap), live gpt-4.1 run approved | ![](docs/screenshots/12_deployed_vps.jpg) |
 
-Screenshots 1-4 and 7-12 are from a **live gpt-4.1 run**. Screenshots 5-6 are from **demo mode**, where a
-scripted model makes the classic mistake on purpose (the traceback and the fix really run). In live runs the
-agents also fixed real errors on their own (e.g. 1 of 3 gpt-4.1 test runs).
+All screenshots except 6 are from **live gpt-4.1 runs**. Screenshot 6 is **demo mode** (no API key): a scripted
+model makes the classic mistake on purpose, then trips the chart check; the tracebacks and fixes really run.
 
 Real files from the live run: [`docs/sample_output/`](docs/sample_output) (`analysis.py`, 3 charts, `report.pdf`).
 
@@ -76,11 +107,11 @@ mainly Smartwatch Lite (−4.28 L), Earbuds X2 (−2.70 L) and BT Speaker Mini (
 
 ## Done checklist
 
-- [x] At least one run shows the agents fixing a code error on their own (screenshot 5; also live)
+- [x] At least one run shows the agents fixing a code error on their own (live: 4 of 6 messy-data runs; see "Self-correction, live")
 - [x] Code runs only inside the sandbox folder or Docker container (unsafe calls such as subprocess, network and file deletes are blocked)
 - [x] Run stops on APPROVED or after 12 messages, never loops forever (tested both ways)
 - [x] Running the saved analysis.py again gives exactly the same numbers (button in the app + test)
-- [x] Every chart has a title, axis labels and units (Coder rules + Reviewer check)
+- [x] Every chart has a title, axis labels and units (enforced by the sandbox chart check)
 - [x] Human approval step works, and a follow-up question continues the same session
 - [x] Stretch: SelectorGroupChat (LLM picks the speaker), Excel files with multiple sheets, one-page PDF report
 
@@ -97,11 +128,15 @@ C:\Users\HP\.venvs\datapilot\Scripts\python -m streamlit run app.py
 
 - **Demo mode** (sidebar) needs no API key.
 - CLI with the `UserProxyAgent` prompt: `python cli.py sample_data/sales_2026.csv "your question" [--routing round_robin|llm] [--demo]`.
-- `python make_sample_data.py` regenerates `sample_data/sales_2026.csv` (12,480 rows) and the two-sheet `.xlsx`.
+- `python make_sample_data.py` regenerates `sample_data/sales_2026.csv` (12,480 rows), the two-sheet `.xlsx`, and the
+  messy real-world versions `sales_2026_messy.csv` / `.xlsx`.
 - On Windows keep the venv at a short path (long paths break pip and the sandbox). Pandas/pyarrow are pinned to
   builds that Smart App Control allows.
 
-**Model choice:** gpt-4o-mini often approved vague or wrong breakdowns. gpt-4.1 answered 3 of 3 test runs correctly.
+**Model choice:** gpt-4o-mini often approved vague or wrong breakdowns. gpt-4.1 answered 3 of 3 clean-data test runs
+correctly. A cheap Coder (`CODER_MODEL=gpt-4o-mini`) with a gpt-4.1 Reviewer was tested and was worse (wrong
+numbers approved, one run stuck in an error loop), so all agents use gpt-4.1 by default. Per-agent overrides:
+`PLANNER_MODEL`, `CODER_MODEL`, `REVIEWER_MODEL`.
 
 ## Deploy on the Hostinger VPS (next to ReviewLens)
 

@@ -49,9 +49,10 @@ async def test_self_correction_and_approval():
 
         exec_msgs = [str(m.content) for m in chat if m.source == "Executor"]
         assert exec_msgs[0].startswith(ERR_TAG) and "KeyError" in exec_msgs[0] and "revenue" in exec_msgs[0], exec_msgs[0][:300]
-        assert exec_msgs[1].startswith(OK_TAG), "Coder's fix should run OK"
-        assert session.state.fixed_after_error >= 1
-        print("[1] self-correction OK: KeyError -> fixed by Coder")
+        assert exec_msgs[1].startswith(ERR_TAG) and "Chart quality check failed" in exec_msgs[1], exec_msgs[1][-400:]
+        assert exec_msgs[2].startswith(OK_TAG), "Coder's second fix should run OK"
+        assert session.state.fixed_after_error >= 1 and session.state.errors == 2
+        print("[1] self-correction OK: KeyError -> fixed, chart check failure -> fixed")
 
         files = {p.name for p in run_dir.iterdir()}
         assert {"analysis.py", "category_trend.png", "region_breakdown.png"} <= files, files

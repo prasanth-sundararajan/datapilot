@@ -28,6 +28,7 @@ from team import OK_TAG, SANDBOX_ROOT, build_session, build_task, is_approval, n
 
 ROOT = Path(__file__).resolve().parent
 SAMPLE = ROOT / "sample_data" / "sales_2026.csv"
+MESSY = ROOT / "sample_data" / "sales_2026_messy.xlsx"
 IN_CONTAINER = os.getenv("DATAPILOT_IN_CONTAINER") == "1"
 ROUTING_LABELS = {"rules": "Selector · fixed rules", "llm": "Selector · LLM picks", "round_robin": "RoundRobin"}
 
@@ -73,7 +74,7 @@ has_key = config.detect_provider() is not None
 with st.sidebar:
     st.markdown("### ⚙️ Settings")
     st.markdown(f'<span class="dp-chip" style="--c:{ui.EMERALD if has_key else ui.ROSE}">'
-                f'{"● " + config.describe() if has_key else "● no API key"}</span>', unsafe_allow_html=True)
+                f'{"● " + config.describe_roles() if has_key else "● no API key"}</span>', unsafe_allow_html=True)
     demo_mode = st.toggle("Demo mode (scripted model)", value=not has_key,
                           help="Replays a scripted Planner/Coder/Reviewer for the sample question. "
                                "The code, the error and the numbers are real.")
@@ -118,7 +119,11 @@ if ss.data_path is None:
     c2.write("")
     c2.write("")
     use_sample = c2.button("✨ Use sample sales_2026.csv", use_container_width=True, type="primary")
-    if up is not None or use_sample:
+    use_messy = c2.button("🧪 Messy real-world export", use_container_width=True, disabled=demo_mode,
+                          help="Same sales as a typical shop/ERP Excel export: mixed date formats, '₹1,999' prices, "
+                               "'10%' discounts, region spelling variants, blank cells, plus a targets sheet. "
+                               "Watch the sandbox's data check catch the Coder's cleaning bugs and the Coder fix them.")
+    if up is not None or use_sample or use_messy:
         run_dir = new_run_dir(ss.sid)
         if up is not None:
             with tempfile.NamedTemporaryFile(delete=False, suffix=Path(up.name).suffix) as tmp:
@@ -126,8 +131,9 @@ if ss.data_path is None:
             ss.data_path = stage_data_file(tmp.name, run_dir, up.name)
             ss.data_name = up.name
         else:
-            ss.data_path = stage_data_file(SAMPLE, run_dir)
-            ss.data_name = SAMPLE.name
+            src = MESSY if use_messy else SAMPLE
+            ss.data_path = stage_data_file(src, run_dir)
+            ss.data_name = src.name
         ss.schema = describe_data(ss.data_path)
         st.rerun()
     st.info("Upload a file or use the sample to start. Try: *" + demo.DEMO_QUESTION + "*")
@@ -163,8 +169,8 @@ def render_item(item):
             st.markdown(shown.replace("\n", "  \n"))
         elif src == "Coder" and "```" in text:
             intro = text.split("```", 1)[0].strip()
-            fix = any(w in intro.lower() for w in ("fix", "error", "added", "updated", "corrected"))
-            st.markdown(ui.agent_header("Coder", "FIX" if fix else "CODE"), unsafe_allow_html=True)
+            tag = item.get("tag") or ("FIX" if intro.lower().startswith("fixed") else "CODE")
+            st.markdown(ui.agent_header("Coder", tag), unsafe_allow_html=True)
             if intro:
                 st.markdown(intro)
             with st.expander("Show code", expanded=False):
@@ -252,8 +258,11 @@ for item in ss.log:
 async def ensure_session():
     if ss.session is None:
         client = demo.demo_model_client(data_path) if demo_mode else config.make_model_client()
+        roles = {} if demo_mode else {r: config.make_model_client(m) for r in ("planner", "coder", "reviewer")
+                                      if (m := config.role_model(r))}
         ss.session = await build_session(client, run_dir, data_path, ss.schema, max_messages=max_msgs,
-                                         routing="rules" if demo_mode else routing, use_docker=use_docker)
+                                         routing="rules" if demo_mode else routing, use_docker=use_docker,
+                                         role_clients=roles)
         ss.session_routing = "rules" if demo_mode else routing
     return ss.session
 
@@ -263,7 +272,7 @@ async def run_turn(question: str | None):
     first = len(ss.turns) == 0
     task = build_task(question, ss.schema) if (question and first) else question
     state = sess.state
-    runs0, fixed0 = state.executions, state.fixed_after_error
+    runs0, errs0 = state.executions, state.errors
     done: set[str] = {"user"}
     show_pipeline("Planner", done)
     status = st.status("Agents are working…", expanded=True)
@@ -276,6 +285,12 @@ async def run_turn(question: str | None):
             continue
         n += 1
         entry = {"source": item.source, "content": str(item.content)}
+        if item.source == "Coder":
+            prev = next((e for e in reversed(ss.log) if e.get("source") in ("Executor", "Reviewer", "Planner")), None)
+            if prev and prev["source"] == "Executor" and not prev["content"].startswith(OK_TAG):
+                entry["tag"] = "FIX · SELF-CORRECTION"
+            elif prev and prev["source"] == "Reviewer":
+                entry["tag"] = "FIX · REVIEW FEEDBACK"
         ss.log.append(entry)
         with status:
             render_item(entry)
@@ -306,7 +321,8 @@ async def run_turn(question: str | None):
         "routing": ss.session_routing,
         "stop_reason": result.stop_reason if result else "unknown",
         "n_messages": len(result.messages) if result else n,
-        "stats": {"runs": state.executions - runs0, "fixed": state.fixed_after_error - fixed0},
+        "stats": {"runs": state.executions - runs0,
+                  "fixed": (state.errors - errs0) if state.last_status == "ok" else 0},  # errors the agents repaired
     })
     ss.log.append({"type": "turn_end", "turn": k})
 

@@ -75,10 +75,21 @@ Rules:
   Use bar or line charts (no pie charts). EVERY chart must have a title, an x-axis label and a y-axis
   label that includes units (e.g. "Revenue (Rs lakh)"). Plotted values must match the unit in the label:
   divide by 1e5 before plotting when the label says lakh. Call plt.tight_layout(), savefig(dpi=120), plt.close().
+- Real exports are messy: text numbers ("₹1,999", "10%"), mixed date formats (day-first), stray spaces and
+  different capitalisation in names. Clean them explicitly. Right after cleaning the FULL table (before any
+  filtering to months/regions in the question) ALWAYS call the
+  sandbox's data check (it raises an error if more than 2% of rows were lost, dates did not parse, or a name is
+  spelled two ways):
+      from _dp_quality_gate import data_check
+      data_check(raw_rows=len(raw_df), df=clean_df, group_cols=["region", "category"], date_col="order_date",
+                 date_raw=raw_df["order_date"])
+  (use your real column names; list every text column you group or join by; keep the raw_df index in clean_df).
 - Print a clear SUMMARY block at the end with the headline numbers (before, after, change, % change, shares).
 - Deterministic results: no randomness, sort outputs.
 - Never use input(), the network, subprocess, or delete/modify files other than the PNGs you create.
-When the Executor reports an error: say in ONE line what was wrong, then resend the FULL corrected script.
+The sandbox checks every chart you save: a missing title, axis label or y-axis unit raises an error.
+When the Executor reports an error: start with "Fixed:" and say in ONE line what was wrong, then resend the
+FULL corrected script. (Tracebacks are 1 line off: the sandbox adds one import line at the top.)
 When the Reviewer gives feedback: apply it and resend the FULL script. Never send partial snippets.
 Never reply without a ```python block: you are only called when code must be written or fixed."""
 
@@ -89,8 +100,13 @@ before the user sees anything. Check:
    values, the absolute change and the % change must be printed. For "what caused it": each contributor's share
    (%) of the TOTAL change must be printed. A breakdown number must never be presented as the total.
 3. Numbers are sensible and consistent (parts add up to the total, % changes match the before/after values).
+   Any share outside 0-100%, or shares of one total that do not add up to about 100%, are WRONG: send FEEDBACK.
+   A contribution must be a change/gap amount, never a raw revenue total.
 4. Every chart in the script has a title, x and y axis labels, and units in the y label. No pie charts.
-Feedback is ONLY for blocking problems: a failed run, a part of the question with no printed number,
+5. The DATA CHECK block is present and clean: group values have no duplicates that differ only by case or
+   spaces (e.g. "North" and "north "), no more than 2% of rows dropped, dates parsed for the whole range.
+   When joining tables, both sides use the same cleaned keys. Otherwise the numbers are wrong: send FEEDBACK.
+Feedback is ONLY for blocking problems: a failed run, a dirty DATA CHECK, a part of the question with no printed number,
 numbers that contradict each other, a breakdown shown as the total, or a chart missing title/axis labels/units.
 NEVER send feedback about sign conventions (a drop may be printed as negative), rounding, wording, formatting,
 or extra analysis you would like. You can fix presentation yourself in the final answer
@@ -156,9 +172,130 @@ BLOCKED_PATTERNS = [
 ]
 
 
+GATE_MODULE = "_dp_quality_gate"
+GATE_IMPORT = f"import {GATE_MODULE}  # DataPilot sandbox: chart quality check\n"
+# Loaded before every run in the sandbox. Saving a chart without a title, axis labels or units raises a real
+# error, so the Coder has to fix it, exactly like any other bug. Not part of analysis.py.
+GATE_SOURCE = r'''
+import matplotlib
+matplotlib.use("Agg")
+from matplotlib.figure import Figure
+
+_UNIT_HINTS = ("(", "rs", "₹", "%", "lakh", "crore", "inr", "units", "count", "qty", "number", "orders")
+_orig_savefig = Figure.savefig
+
+
+def _checked_savefig(self, fname, *args, **kwargs):
+    suptitle = self._suptitle.get_text() if getattr(self, "_suptitle", None) else ""
+    for ax in self.axes:
+        if not ax.has_data():
+            continue
+        problems = []
+        if not (ax.get_title() or suptitle):
+            problems.append("no title")
+        if not ax.get_xlabel():
+            problems.append("no x-axis label")
+        ylabel = ax.get_ylabel()
+        if not ylabel:
+            problems.append("no y-axis label")
+        elif not any(h in ylabel.lower() for h in _UNIT_HINTS):
+            problems.append(f"y-axis label {ylabel!r} has no units, e.g. 'Revenue (Rs lakh)'")
+        if problems:
+            raise ValueError(f"Chart quality check failed for {fname}: " + "; ".join(problems)
+                             + ". Every chart needs a title, x and y axis labels, and units on the y axis.")
+    return _orig_savefig(self, fname, *args, **kwargs)
+
+
+Figure.savefig = _checked_savefig
+
+# Keep a pristine copy of every table the script loads, so data_check can compare cleaned dates to the originals.
+import pandas as _pd
+_RAW_TABLES = []
+_orig_read_csv, _orig_read_excel = _pd.read_csv, _pd.read_excel
+
+
+def _remember(obj):
+    for t in (obj.values() if isinstance(obj, dict) else [obj]):
+        if isinstance(t, _pd.DataFrame):
+            _RAW_TABLES.append(t.copy())
+    return obj
+
+
+_pd.read_csv = lambda *a, **k: _remember(_orig_read_csv(*a, **k))
+_pd.read_excel = lambda *a, **k: _remember(_orig_read_excel(*a, **k))
+''' + "\n" + r'''
+def data_check(raw_rows, df, group_cols=(), date_col=None, max_drop=0.02, date_raw=None):
+    """DataPilot data check: prints a DATA CHECK block and raises if the cleaning looks wrong.
+    date_raw: the original (uncleaned) date column, used to catch day/month swaps."""
+    import pandas as pd
+    used = len(df)
+    dropped = raw_rows - used
+    print("DATA CHECK")
+    print(f"  rows loaded: {raw_rows:,} | rows used: {used:,} | dropped: {dropped:,}")
+    problems = []
+    if raw_rows and dropped / raw_rows > max_drop:
+        problems.append(f"{dropped:,} of {raw_rows:,} rows ({dropped / raw_rows:.0%}) were dropped, more than "
+                        f"{max_drop:.0%}. If you filtered rows on purpose (e.g. to the months in the question), "
+                        "call data_check on the full cleaned data BEFORE filtering. Otherwise the cleaning is "
+                        "losing data (e.g. mixed date formats need pd.to_datetime(col, format='mixed', dayfirst=True))")
+    for col in group_cols:
+        vals = df[col].dropna().astype(str).unique()
+        print(f"  {col}: {sorted(vals)[:25]}")
+        seen = {}
+        for v in vals:
+            seen.setdefault(v.strip().lower(), []).append(v)
+        dups = [v for v in seen.values() if len(v) > 1]
+        if dups:
+            problems.append(f"column {col!r} has the same value spelled differently {dups[:3]}: "
+                            "normalise it, e.g. .str.strip().str.title()")
+    if date_col is not None:
+        d = df[date_col]
+        if not pd.api.types.is_datetime64_any_dtype(d):
+            problems.append(f"column {date_col!r} is not a parsed datetime")
+        else:
+            print(f"  {date_col}: {d.min()} to {d.max()} ({int(d.isna().sum())} unparsed)")
+            if d.isna().any():
+                problems.append(f"{int(d.isna().sum())} values in {date_col!r} could not be parsed")
+            if date_raw is None:  # use the sandbox's pristine copy of the loaded file
+                for t in globals().get("_RAW_TABLES", []):
+                    cands = [c for c in t.columns if t[c].dtype == object and
+                             (c == date_col or "date" in str(c).lower())]
+                    if cands and df.index.isin(t.index).all():
+                        date_raw = t[cands[0]]
+                        break
+            if date_raw is not None:
+                raw = date_raw.reindex(df.index).astype(str).str.strip()
+                iso = raw.str.match(r"^\d{4}-\d{2}-\d{2}$") & d.notna()
+                swapped = int((d[iso].dt.strftime("%Y-%m-%d") != raw[iso].str[:10]).sum())
+                if swapped:
+                    problems.append(f"{swapped:,} ISO dates (YYYY-MM-DD) were parsed with day and month swapped "
+                                    "(e.g. 2026-09-11 became 9 Nov): parse the whole column at once with "
+                                    "pd.to_datetime(col, format='mixed', dayfirst=True)")
+                parts = raw.str.extract(r"^(\d{1,2})[/.-](\d{1,2})[/.-](\d{4})$").astype(float)
+                slash = parts[0].notna() & d.notna()
+                if slash.any() and (parts.loc[slash, 0] > 12).any():  # the export is day-first (dd/mm/yyyy)
+                    wrong = int((d[slash].dt.month != parts.loc[slash, 1]).sum())
+                    if wrong:
+                        problems.append(f"{wrong:,} dd/mm/yyyy dates were read month-first (e.g. 02/08/2026 must be "
+                                        "2 Aug, not 8 Feb): use pd.to_datetime(col, format='mixed', dayfirst=True)")
+    if problems:
+        raise ValueError("DATA CHECK failed: " + " | ".join(problems))
+    print("  DATA CHECK passed")
+'''
+DATA_CHECK_IMPORT = f"from {GATE_MODULE} import data_check"
+DATA_CHECK_SOURCE = GATE_SOURCE[GATE_SOURCE.index("def data_check"):]
+
+
+def standalone_script(code: str) -> str:
+    """analysis.py must re-run anywhere: inline the sandbox's data_check instead of importing it."""
+    if DATA_CHECK_IMPORT in code:
+        code = code.replace(DATA_CHECK_IMPORT, "# data_check: copied from the DataPilot sandbox\n" + DATA_CHECK_SOURCE, 1)
+    return code
+
+
 class SandboxExecutorAgent(CodeExecutorAgent):
-    """CodeExecutorAgent that (1) refuses obviously unsafe code, (2) tags results OK/ERROR,
-    (3) saves the last working script as analysis.py and tracks which charts it produced."""
+    """CodeExecutorAgent that (1) refuses obviously unsafe code, (2) enforces the chart quality check,
+    (3) tags results OK/ERROR, (4) saves the last working script as analysis.py and tracks its charts."""
 
     def __init__(self, *args, state: RunState, **kwargs):
         super().__init__(*args, **kwargs)
@@ -179,7 +316,9 @@ class SandboxExecutorAgent(CodeExecutorAgent):
                     "Only pandas/matplotlib on the local data file are allowed."))
 
         start = time.time() - 1
-        result = await super().execute_code_block(code_blocks, cancellation_token)
+        (st.run_dir / f"{GATE_MODULE}.py").write_text(GATE_SOURCE, encoding="utf-8")
+        gated = [CodeBlock(code=GATE_IMPORT + code, language="python")]
+        result = await super().execute_code_block(gated, cancellation_token)
         out = result.output
         if len(out) > 6000:
             out = out[:3000] + "\n...[output truncated]...\n" + out[-3000:]
@@ -200,7 +339,7 @@ class SandboxExecutorAgent(CodeExecutorAgent):
             "# analysis.py - generated by DataPilot agents and run successfully in the sandbox.\n"
             "# Re-run with: python analysis.py   (from this folder, next to the data file)\n\n"
         )
-        (st.run_dir / "analysis.py").write_text(header + code, encoding="utf-8")
+        (st.run_dir / "analysis.py").write_text(header + standalone_script(code), encoding="utf-8")
         (st.run_dir / "last_output.txt").write_text(result.output, encoding="utf-8")
         chart_note = f"\nCharts saved: {', '.join(charts)}" if charts else "\nCharts saved: none"
         return CodeResult(exit_code=0, output=f"{OK_TAG}\n{out}{chart_note}")
@@ -272,14 +411,16 @@ class DataPilotSession:
     state: RunState
     executor: object
     model_client: object
+    extra_clients: tuple = ()
 
     async def close(self):
         try:
             if hasattr(self.executor, "stop"):
                 await self.executor.stop()
         finally:
-            if hasattr(self.model_client, "close"):
-                await self.model_client.close()
+            for c in (self.model_client, *self.extra_clients):
+                if hasattr(c, "close"):
+                    await c.close()
 
 
 def new_run_dir(session_id: str) -> Path:
@@ -309,20 +450,23 @@ async def build_session(
     max_messages: int = 12,
     routing: str = "rules",
     use_docker: bool = False,
+    role_clients: dict | None = None,
 ) -> DataPilotSession:
+    """role_clients: optional per-agent model clients, e.g. {"coder": <cheap model client>}."""
+    role_clients = role_clients or {}
     state = RunState(run_dir=run_dir, data_file=data_file, schema=schema)
     code_executor = _make_code_executor(run_dir, use_docker)
     if hasattr(code_executor, "start"):
         await code_executor.start()
 
-    planner = AssistantAgent("Planner", model_client=model_client, system_message=PLANNER_PROMPT,
+    planner = AssistantAgent("Planner", model_client=role_clients.get("planner", model_client), system_message=PLANNER_PROMPT,
                              description="Writes the step-by-step analysis plan.")
-    coder = AssistantAgent("Coder", model_client=model_client, system_message=CODER_PROMPT,
+    coder = AssistantAgent("Coder", model_client=role_clients.get("coder", model_client), system_message=CODER_PROMPT,
                            description="Writes and fixes the Python analysis script.")
     executor = SandboxExecutorAgent("Executor", code_executor=code_executor, sources=["Coder"],
                                     supported_languages=["python", "py"], state=state,
                                     description="Runs the Coder's script in the sandbox and reports output or errors.")
-    reviewer = ReviewerAgent("Reviewer", model_client=model_client, system_message=REVIEWER_PROMPT,
+    reviewer = ReviewerAgent("Reviewer", model_client=role_clients.get("reviewer", model_client), system_message=REVIEWER_PROMPT,
                               description="Checks results and charts; approves or sends feedback.")
 
     termination = (TextMentionTermination("APPROVED", sources=["Reviewer"])
@@ -341,7 +485,8 @@ async def build_session(
             selector_prompt=SELECTOR_PROMPT,
             allow_repeated_speaker=False,
         )
-    return DataPilotSession(team=team, state=state, executor=code_executor, model_client=model_client)
+    return DataPilotSession(team=team, state=state, executor=code_executor, model_client=model_client,
+                            extra_clients=tuple(c for c in role_clients.values() if c is not model_client))
 
 
 def build_task(question: str, schema: str) -> str:

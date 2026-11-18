@@ -64,6 +64,34 @@ def generate() -> pd.DataFrame:
     return df.sort_values(["order_date", "region", "category", "product"], kind="stable").reset_index(drop=True)
 
 
+def make_messy(df: pd.DataFrame) -> pd.DataFrame:
+    """Same sales, exported the way real shop/ERP systems do it: the classic things that break naive code.
+    - headers with spaces and units ("Order Date", "Unit Price (Rs)")
+    - dates in three formats (2026-08-02, 02/08/2026 day-first, 02-Aug-2026)
+    - prices as text with a rupee sign and thousands separators ("₹1,999")
+    - discounts as "10%" text or 0.1 numbers
+    - region spelling/case/whitespace variants ("South", "south ", "SOUTH")
+    - a few blank units cells
+    """
+    r = np.random.default_rng(7)
+    m = df.copy()
+    d = pd.to_datetime(m["order_date"])
+    fmt = r.integers(0, 3, len(m))
+    m["order_date"] = np.where(fmt == 0, d.dt.strftime("%Y-%m-%d"),
+                               np.where(fmt == 1, d.dt.strftime("%d/%m/%Y"), d.dt.strftime("%d-%b-%Y")))
+    m["unit_price"] = ["₹" + f"{p:,}" for p in m["unit_price"]]
+    m["discount"] = [f"{x * 100:.0f}%" if r.random() < 0.5 else f"{x:.2f}" for x in m["discount"]]
+    variants = {"South": ["South", "south ", "SOUTH"], "North": ["North", "north"], "East": ["East", " East"],
+                "West": ["West", "WEST"]}
+    m["region"] = [variants[x][r.integers(len(variants[x]))] for x in m["region"]]
+    units = m["units"].astype("object")
+    units[r.random(len(m)) < 0.004] = ""
+    m["units"] = units
+    return m.rename(columns={"order_date": "Order Date", "region": "Region", "category": "Category",
+                             "product": "Product", "units": "Units", "unit_price": "Unit Price (Rs)",
+                             "discount": "Discount"})
+
+
 def main():
     OUT.mkdir(exist_ok=True)
     df = generate()
@@ -77,7 +105,14 @@ def main():
         df.to_excel(xw, sheet_name="Sales", index=False)
         targets.to_excel(xw, sheet_name="Region_Targets", index=False)
 
+    messy = make_messy(df)
+    messy.to_csv(OUT / "sales_2026_messy.csv", index=False, encoding="utf-8-sig")
+    with pd.ExcelWriter(OUT / "sales_2026_messy.xlsx") as xw:
+        messy.to_excel(xw, sheet_name="Sales Export", index=False)
+        targets.to_excel(xw, sheet_name="Region_Targets", index=False)
+
     print(f"Wrote {len(df):,} rows to {OUT / 'sales_2026.csv'} and a 2-sheet workbook sales_2026.xlsx")
+    print("Wrote messy real-world versions: sales_2026_messy.csv / .xlsx")
 
 
 if __name__ == "__main__":

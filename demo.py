@@ -1,7 +1,7 @@
 """Offline demo mode: a scripted model (AutoGen ReplayChatCompletionClient) for the sample question.
 
-The scripted Coder deliberately makes the classic mistake (KeyError: 'revenue'), then fixes it,
-and the Reviewer asks for missing axis labels once. Everything else is real: the code really runs in
+The scripted Coder deliberately makes the classic mistake (KeyError: 'revenue'), fixes it, then forgets the
+axis labels on one chart, so the sandbox chart check fails and it fixes that too. Everything else is real: the code really runs in
 the sandbox, the error is a real traceback, and the numbers in the final answer are computed from the data.
 Used by the tests and by the "Demo mode" toggle in the app when no API key is configured.
 """
@@ -140,9 +140,8 @@ APPROVED"""
         PLAN,
         "Here is the analysis script.\n```python\n" + BUGGY + "```",
         "Fixed: the revenue column is now created before it is used for grouping.\n```python\n" + NO_LABELS + "```",
-        "FEEDBACK: region_breakdown.png has no axis labels. Add an x label (Region) and a y label with rupee units "
-        "(Revenue (Rs lakh)). The numbers look consistent.",
-        "Labels added to region_breakdown.png.\n```python\n" + FINAL + "```",
+        "Fixed: the sandbox chart check rejected region_breakdown.png (no axis labels); added an x label (Region) "
+        "and a y label with rupee units.\n```python\n" + FINAL + "```",
         approval,
     ]
 
