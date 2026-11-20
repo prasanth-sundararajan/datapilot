@@ -1,5 +1,5 @@
 [server]
-maxUploadSize = 25
+maxUploadSize = 10   # MB; guardrails.MAX_UPLOAD_MB checks it again
 
 [browser]
 gatherUsageStats = false

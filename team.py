@@ -24,10 +24,12 @@ from typing import List, Sequence
 from autogen_agentchat.agents import AssistantAgent, CodeExecutorAgent
 from autogen_agentchat.base import Response
 from autogen_agentchat.messages import TextMessage
-from autogen_agentchat.conditions import FunctionalTermination, MaxMessageTermination, TextMentionTermination
+from autogen_agentchat.conditions import FunctionalTermination, MaxMessageTermination, TextMentionTermination, TimeoutTermination
 from autogen_agentchat.teams import RoundRobinGroupChat, SelectorGroupChat
 from autogen_core import CancellationToken
 from autogen_core.code_executor import CodeBlock, CodeResult
+
+import guardrails as gr
 
 ROOT = Path(__file__).resolve().parent
 
@@ -59,7 +61,7 @@ For "which X dropped/grew most" questions: first compare TOTALS per X across the
 by Y and report each Y's share (%) of the total change, then the top items inside the main Y.
 Do NOT write code and do NOT guess any numbers. Keep it under 150 words.
 If you are asked to speak again later in the conversation (e.g. after Reviewer feedback), reply with
-one line: "Plan unchanged - Coder, apply the latest feedback." unless the plan itself was wrong."""
+one line: "Plan unchanged - Coder, apply the latest feedback." unless the plan itself was wrong.""" + gr.UNTRUSTED_DATA_RULES
 
 CODER_PROMPT = """You are the Coder. Turn the Planner's plan into ONE complete, self-contained Python
 script inside a single ```python code block. The Executor runs it in the current folder.
@@ -91,7 +93,9 @@ The sandbox checks every chart you save: a missing title, axis label or y-axis u
 When the Executor reports an error: start with "Fixed:" and say in ONE line what was wrong, then resend the
 FULL corrected script. (Tracebacks are 1 line off: the sandbox adds one import line at the top.)
 When the Reviewer gives feedback: apply it and resend the FULL script. Never send partial snippets.
-Never reply without a ```python block: you are only called when code must be written or fixed."""
+Never reply without a ```python block: you are only called when code must be written or fixed.
+The sandbox statically checks your code: only pandas, numpy, matplotlib and the standard math/date/text modules
+may be imported; os, sys, subprocess, network, eval/exec, absolute paths and file deletes are blocked.""" + gr.UNTRUSTED_DATA_RULES
 
 REVIEWER_PROMPT = """You are the Reviewer. You check the latest Executor output (and the Coder's script)
 before the user sees anything. Check:
@@ -132,7 +136,7 @@ SUGGESTED NEXT QUESTION
 <one useful follow-up question that this data can answer>
 APPROVED
 
-The last line of an approval MUST be the single word APPROVED."""
+The last line of an approval MUST be the single word APPROVED.""" + gr.UNTRUSTED_DATA_RULES
 
 SELECTOR_PROMPT = """You are routing a data-analysis team. Roles:
 {roles}
@@ -163,20 +167,14 @@ class RunState:
     question_index: int = 0
 
 
-BLOCKED_PATTERNS = [
-    r"\bimport\s+subprocess\b", r"\bfrom\s+subprocess\b", r"\bos\.system\s*\(", r"\bos\.popen\s*\(",
-    r"\bimport\s+socket\b", r"\bimport\s+requests\b", r"\burllib\.request\b", r"\bshutil\.rmtree\s*\(",
-    r"\bos\.remove\s*\(", r"\bos\.unlink\s*\(", r"\bos\.rmdir\s*\(", r"\b__import__\s*\(",
-    r"(?<![.\w])eval\s*\(", r"(?<![.\w])exec\s*\(", r"(?<![.\w])input\s*\(",
-    r"\.\./", r"\.\.\\", r"['\"][A-Za-z]:[\\/]",
-]
+# Static code checks (AST allow/deny list) live in guardrails.check_code.
 
 
 GATE_MODULE = "_dp_quality_gate"
 GATE_IMPORT = f"import {GATE_MODULE}  # DataPilot sandbox: chart quality check\n"
 # Loaded before every run in the sandbox. Saving a chart without a title, axis labels or units raises a real
 # error, so the Coder has to fix it, exactly like any other bug. Not part of analysis.py.
-GATE_SOURCE = r'''
+GATE_SOURCE = gr.RUNTIME_GUARD_SOURCE + r'''
 import matplotlib
 matplotlib.use("Agg")
 from matplotlib.figure import Figure
@@ -307,21 +305,19 @@ class SandboxExecutorAgent(CodeExecutorAgent):
         code = "\n\n".join(b.code for b in code_blocks)
         st.executions += 1
 
-        for pat in BLOCKED_PATTERNS:
-            if re.search(pat, code):
-                st.errors += 1
-                st.last_status = "error"
-                return CodeResult(exit_code=1, output=(
-                    f"{ERR_TAG}\nBlocked by sandbox policy: code matches forbidden pattern {pat!r}. "
-                    "Only pandas/matplotlib on the local data file are allowed."))
+        problems = gr.check_code(code)
+        if problems:
+            st.errors += 1
+            st.last_status = "error"
+            return CodeResult(exit_code=1, output=(
+                f"{ERR_TAG}\nBlocked by sandbox policy:\n- " + "\n- ".join(problems[:10])
+                + "\nOnly pandas/numpy/matplotlib on the local data file are allowed. Rewrite without these."))
 
         start = time.time() - 1
         (st.run_dir / f"{GATE_MODULE}.py").write_text(GATE_SOURCE, encoding="utf-8")
         gated = [CodeBlock(code=GATE_IMPORT + code, language="python")]
         result = await super().execute_code_block(gated, cancellation_token)
-        out = result.output
-        if len(out) > 6000:
-            out = out[:3000] + "\n...[output truncated]...\n" + out[-3000:]
+        out = gr.cap_output(gr.redact(result.output))
 
         if result.exit_code != 0:
             st.errors += 1
@@ -437,9 +433,8 @@ def _make_code_executor(run_dir: Path, use_docker: bool):
         return DockerCommandLineCodeExecutor(
             image=os.getenv("DOCKER_IMAGE", "datapilot-sandbox:latest"), work_dir=run_dir, timeout=timeout
         )
-    from autogen_ext.code_executors.local import LocalCommandLineCodeExecutor
-
-    return LocalCommandLineCodeExecutor(work_dir=run_dir, timeout=timeout)
+    # No secrets in the child's environment, CPU/memory/file-size limits, capped output (guardrails.py).
+    return gr.SafeLocalCodeExecutor(work_dir=run_dir, timeout=timeout)
 
 
 async def build_session(
@@ -454,6 +449,7 @@ async def build_session(
 ) -> DataPilotSession:
     """role_clients: optional per-agent model clients, e.g. {"coder": <cheap model client>}."""
     role_clients = role_clients or {}
+    max_messages = max(4, min(max_messages, gr.MAX_AGENT_MESSAGES))
     state = RunState(run_dir=run_dir, data_file=data_file, schema=schema)
     code_executor = _make_code_executor(run_dir, use_docker)
     if hasattr(code_executor, "start"):
@@ -471,7 +467,8 @@ async def build_session(
 
     termination = (TextMentionTermination("APPROVED", sources=["Reviewer"])
                    | FunctionalTermination(_reviewer_approved)
-                   | MaxMessageTermination(max_messages))
+                   | MaxMessageTermination(max_messages)
+                   | TimeoutTermination(gr.RUN_TIMEOUT_SECONDS))
     agents = [planner, coder, executor, reviewer]
     if routing == "round_robin":
         # Fixed turn order Planner -> Coder -> Executor -> Reviewer -> Planner ... (simplest team type)
@@ -490,7 +487,7 @@ async def build_session(
 
 
 def build_task(question: str, schema: str) -> str:
-    return f"QUESTION:\n{question}\n\nDATASET SCHEMA:\n{schema}"
+    return f"QUESTION:\n{question}\n\nDATASET SCHEMA:\n{gr.wrap_untrusted(schema)}"
 
 
 def copy_into_run(src: Path, run_dir: Path) -> Path:

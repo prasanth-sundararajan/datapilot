@@ -21,6 +21,7 @@ from autogen_core import CancellationToken
 
 import config
 import demo
+import guardrails as gr
 from data_utils import describe_data, stage_data_file
 from report import export_pdf, parse_final_answer
 from team import build_session, build_task, is_approval, new_run_dir
@@ -59,6 +60,9 @@ async def main():
     question, task = a.question, build_task(a.question, schema)
     try:
         while True:
+            if question and (msg := gr.check_question(question)):  # input guardrail
+                print(msg)
+                break
             result = await stream(sess.team, task)
             last = result.messages[-1]
             approved = last.source == "Reviewer" and is_approval(str(last.content))

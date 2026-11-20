@@ -5,6 +5,7 @@ Run:  streamlit run app.py
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import shutil
 import tempfile
@@ -20,6 +21,7 @@ from autogen_core import CancellationToken
 
 import config
 import demo
+import guardrails as gr
 import ui
 from data_utils import describe_data, stage_data_file
 from report import export_pdf, outputs_match, parse_final_answer, rerun_analysis
@@ -30,6 +32,7 @@ ROOT = Path(__file__).resolve().parent
 SAMPLE = ROOT / "sample_data" / "sales_2026.csv"
 MESSY = ROOT / "sample_data" / "sales_2026_messy.xlsx"
 IN_CONTAINER = os.getenv("DATAPILOT_IN_CONTAINER") == "1"
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 ROUTING_LABELS = {"rules": "Selector · fixed rules", "llm": "Selector · LLM picks", "round_robin": "RoundRobin"}
 
 st.set_page_config(page_title="DataPilot", page_icon="📊", layout="wide")
@@ -84,7 +87,8 @@ with st.sidebar:
                        disabled=demo_mode or ss.session is not None,
                        help="Selector + fixed rules: errors go straight back to the Coder (default). "
                             "LLM picks: SelectorGroupChat lets the model choose. RoundRobin: fixed turn order.")
-    max_msgs = st.slider("Stop after N messages", 6, 24, 12, disabled=ss.session is not None)
+    max_msgs = st.slider("Stop after N messages", 6, max(6, min(24, gr.MAX_AGENT_MESSAGES)),
+                         min(12, max(6, gr.MAX_AGENT_MESSAGES)), disabled=ss.session is not None)
     if IN_CONTAINER:
         use_docker = False
         st.caption("🐳 Code runs in this app's isolated Docker container sandbox.")
@@ -119,7 +123,8 @@ show_pipeline(None, {"user", "Planner", "Coder", "Executor", "Reviewer", "answer
 # ---------------------------------------------------------------- data
 if ss.data_path is None:
     c1, c2 = st.columns([3, 1])
-    up = c1.file_uploader("Upload sales data (CSV or Excel, multi-sheet OK)", type=["csv", "xlsx", "xls"])
+    up = c1.file_uploader(f"Upload sales data (CSV or Excel .xlsx, multi-sheet OK, max {gr.MAX_UPLOAD_MB} MB, "
+                          f"{gr.MAX_ROWS:,} rows x {gr.MAX_COLUMNS} columns)", type=["csv", "xlsx"])
     c2.write("")
     c2.write("")
     use_sample = c2.button("✨ Use sample sales_2026.csv", use_container_width=True, type="primary")
@@ -129,16 +134,28 @@ if ss.data_path is None:
                                "Watch the sandbox's data check catch the Coder's cleaning bugs and the Coder fix them.")
     if up is not None or use_sample or use_messy:
         run_dir = new_run_dir(ss.sid)
-        if up is not None:
-            with tempfile.NamedTemporaryFile(delete=False, suffix=Path(up.name).suffix) as tmp:
-                tmp.write(up.getbuffer())
-            ss.data_path = stage_data_file(tmp.name, run_dir, up.name)
-            ss.data_name = up.name
-        else:
-            src = MESSY if use_messy else SAMPLE
-            ss.data_path = stage_data_file(src, run_dir)
-            ss.data_name = src.name
-        ss.schema = describe_data(ss.data_path)
+        try:
+            if up is not None:
+                gr.check_upload(up.name, up.size)  # type + size before anything is written
+                with tempfile.NamedTemporaryFile(delete=False, suffix=Path(up.name).suffix) as tmp:
+                    tmp.write(up.getbuffer())
+                try:
+                    staged = stage_data_file(tmp.name, run_dir, up.name)
+                finally:
+                    Path(tmp.name).unlink(missing_ok=True)
+                name = gr.safe_filename(up.name)
+            else:
+                src = MESSY if use_messy else SAMPLE
+                staged, name = stage_data_file(src, run_dir), src.name
+            schema = describe_data(staged)  # row / column / sheet limits
+        except gr.GuardrailError as e:
+            st.error(str(e))
+            st.stop()
+        except Exception as e:  # unreadable file: no stack trace or paths for the user
+            gr.friendly_error(e)
+            st.error("Could not read that file. Please upload a valid CSV or .xlsx file.")
+            st.stop()
+        ss.data_path, ss.data_name, ss.schema = staged, name, schema
         st.rerun()
     st.info("Upload a file or use the sample to start. Try: *" + demo.DEMO_QUESTION + "*")
     st.stop()
@@ -194,7 +211,7 @@ def render_turn_result(i, turn):
     ]), unsafe_allow_html=True)
 
     if turn["approved"]:
-        st.markdown(ui.answer_html(turn["answer"]), unsafe_allow_html=True)
+        st.markdown(ui.answer_html(turn["answer"]), unsafe_allow_html=True)  # answer_html escapes all HTML
     else:
         st.warning(f"Stopped without approval: {turn['stop_reason']}. Let the agents continue, or ask a clearer question.")
 
@@ -226,7 +243,7 @@ def render_turn_result(i, turn):
             same = ok and outputs_match(out, turn["output"])
             (st.success if same else st.error)(
                 "Same numbers as the approved run ✅" if same else "Output differs from the approved run ❌")
-            st.code(out[-3000:], language="text")
+            st.code(gr.redact(out)[-3000:], language="text")
     st.caption(f"Team: {ROUTING_LABELS.get(turn.get('routing'), 'demo')} · stop reason: {turn['stop_reason']}")
 
     is_last = i == len(ss.turns) - 1
@@ -318,7 +335,7 @@ async def run_turn(question: str | None):
     ss.turns.append({
         "question": question or "(continued)",
         "approved": approved,
-        "answer": parse_final_answer(str(last.content)) if approved else {},
+        "answer": gr.validate_final_answer(parse_final_answer(str(last.content))) if approved else {},
         "charts": list(state.last_ok_charts),
         "output": state.last_ok_output,
         "dir": str(tdir),
@@ -338,20 +355,40 @@ placeholder = demo.DEMO_QUESTION if not ss.turns else "Ask a follow-up question�
 typed = st.chat_input("Demo mode answers the sample question once. Turn it off to ask follow-ups."
                       if locked else placeholder, disabled=locked)
 question = typed or pending_q
+blocked = gr.check_question(question) if question else None
+if blocked:
+    question = None
 
-if (question or pending_c) and not demo_mode and not usage_guard.take_run(SANDBOX_ROOT):
-    st.warning(f"**Daily limit reached.** All {usage_guard.limit()} live runs for today have been used. "
-               "New runs open again at midnight (India time). Demo mode still works.")
+
+def _rate_limited() -> str | None:
+    """Per-visitor hourly limit, then the global daily cap. Returns a friendly message when a limit is hit."""
+    ok, wait = gr.hourly_limiter.take(gr.client_key(getattr(st, "context", None) and st.context.headers, ss.sid))
+    if not ok:
+        return (f"**Hourly limit reached.** Each visitor can start {gr.MAX_RUNS_PER_HOUR} live runs per hour. "
+                f"Please try again in about {max(1, wait // 60)} minutes. Demo mode still works.")
+    if not usage_guard.take_run(SANDBOX_ROOT):
+        return (f"**Daily limit reached.** All {usage_guard.limit()} live runs for today have been used. "
+                "New runs open again at midnight (India time). Demo mode still works.")
+    return None
+
+
+limit_msg = _rate_limited() if (question or pending_c) and not demo_mode else None
+if blocked:
+    st.warning(blocked)
+elif limit_msg:
+    st.warning(limit_msg)
 elif question or pending_c:
     if question:
         if ss.turns:  # follow-up: the human's message goes through the UserProxyAgent
             question = human_says(question, "Approve the final answer, or ask a follow-up question.")
         ss.log.append({"source": "user", "content": question, "tag": "FOLLOW-UP" if ss.turns else "QUESTION"})
         render_item(ss.log[-1])
-    try:
-        run_async(run_turn(question))
-    except Exception as e:  # show model/API errors in the UI instead of crashing
-        st.error(f"Run failed: {e}")
+    try:  # hard stop a little after the agents' own TimeoutTermination
+        run_async(asyncio.wait_for(run_turn(question), gr.RUN_TIMEOUT_SECONDS + 60))
+    except Exception as e:  # friendly message only: no stack traces, paths or secrets
+        if isinstance(e, (asyncio.TimeoutError, TimeoutError)):
+            reset_session(keep_data=True)
+        st.error(gr.friendly_error(e))
         st.stop()
     st.rerun()
 elif not ss.turns:

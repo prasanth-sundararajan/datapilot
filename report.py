@@ -2,11 +2,13 @@
 from __future__ import annotations
 
 import re
+import os
 import subprocess
-import sys
 from pathlib import Path
 
 from fpdf import FPDF
+
+import guardrails as gr
 
 SECTIONS = ["ANSWER", "WHERE IT CAME FROM", "FILES", "SUGGESTED NEXT QUESTION"]
 
@@ -69,7 +71,12 @@ def export_pdf(question: str, answer: dict, charts: list[Path], out_path: Path) 
 
 def rerun_analysis(run_dir: Path, script: str | Path = "analysis.py", timeout: int = 120) -> tuple[bool, str]:
     """Run a saved analysis script again inside the sandbox folder. Returns (exit_ok, stdout+stderr)."""
-    proc = subprocess.run([sys.executable, str(script)], cwd=run_dir, capture_output=True, text=True, timeout=timeout)
+    try:  # same sandbox limits as the agents' runs: no secrets in env, CPU/memory/file-size caps
+        proc = subprocess.run(gr.python_cmd(script), cwd=run_dir, capture_output=True, text=True, encoding="utf-8",
+                              errors="replace", timeout=timeout, env=gr.safe_env(run_dir), stdin=subprocess.DEVNULL,
+                              preexec_fn=gr.child_limits if os.name == "posix" else None)
+    except subprocess.TimeoutExpired:
+        return False, f"Timeout: analysis.py ran longer than {timeout} s."
     return proc.returncode == 0, (proc.stdout + proc.stderr)
 
 

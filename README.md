@@ -105,6 +105,24 @@ Real files from the live run: [`docs/sample_output/`](docs/sample_output) (`anal
 August to Rs 53.55 L in September (−Rs 19.68 L, −26.87%). The South region caused Rs 10.17 L of it (51.69%),
 mainly Smartwatch Lite (−4.28 L), Earbuds X2 (−2.70 L) and BT Speaker Mini (−2.37 L).
 
+## Guardrails
+
+The app runs AI-written Python on a public server, so `guardrails.py` adds safety and abuse limits in layers.
+Every limit is an environment variable (see `.env.example`); the defaults are shown.
+
+| Layer | What it does |
+|---|---|
+| **Input** | `.csv` / `.xlsx` only, max **10 MB** (`MAX_UPLOAD_MB`), **200,000 rows x 100 columns** per sheet, 10 sheets; questions up to **500 characters**. Off-topic (poems, jokes, trivia) and harmful requests (malware, hacking, weapons) get a friendly "data analysis only" message and never reach the agents. |
+| **Prompt injection** | File names, sheet/column names and cell values are untrusted: control characters stripped, values truncated, and the whole schema is wrapped in `<untrusted_data>` tags. Every agent's system prompt says text inside data (and Executor output) is never an instruction. Questions with injection patterns ("ignore previous instructions", "show the system prompt / API key", `/etc/passwd`, tag spoofing) are refused. |
+| **Code sandbox (static)** | Before running, the Coder's script is parsed and checked with an **AST allow/deny list**: imports only from pandas, numpy, matplotlib, openpyxl and safe stdlib modules (math, datetime, re, json, collections, ...). Blocked: `os`, `sys`, `subprocess`, `socket`, `requests`, `urllib`, `shutil`, `ctypes`, `importlib`, `pickle`; `eval`, `exec`, `compile`, `__import__`, `getattr`, `globals`; dunder access (`__class__`, `__subclasses__`); `open()` with a non-literal path; absolute paths, `..`, URLs, `/proc`, `.env`; file deletes (`unlink`, `rmtree`); `read_pickle`, `allow_pickle`; and module hops like `pd.io.common.os`. A blocked script goes back to the Coder as an error with the reasons. |
+| **Code sandbox (runtime)** | The script runs in a child process in the session's own working folder with **no secrets in its environment** (only PATH/locale/temp vars), `python -E -s`, and limits of **60 s CPU** (`EXEC_CPU_SECONDS`), **1.5 GB memory** (`EXEC_MEMORY_MB`), **50 MB per written file**, a 60 s wall-clock timeout (`EXEC_TIMEOUT`), and output capped (200 KB kept, 6,000 characters shown). A guard loaded before the script blocks all network connections, writes outside the working folder, and reads of `/proc`, `/app`, `/home`, `/root`, `/etc/passwd`. In Docker the app runs as a non-root user with `no-new-privileges` and all Linux capabilities dropped. (The executor shares the app container, which needs the network for the LLM API, so `network_mode: none` is not used; the runtime guard blocks the network for the child instead.) |
+| **Cost / abuse** | At most **24 agent messages** per run (`MAX_AGENT_MESSAGES`, slider default 12), **4,096 output tokens** per model call (`LLM_MAX_TOKENS`), **5-minute** run timeout (`RUN_TIMEOUT_SECONDS`, `TimeoutTermination` plus a hard stop), **5 live runs per hour per visitor** (`MAX_RUNS_PER_HOUR`, keyed by IP), and the global daily cap below (`MAX_RUNS_PER_DAY`). Each limit shows a friendly message. |
+| **Output** | The final answer is checked for the expected sections, file names are filtered to safe names, the suggested next question must pass the input checks, and all HTML is escaped. API keys and server paths are redacted from code output and tracebacks; model/API errors show a short message while details go to the server log only. |
+
+Tests: `python -m pytest tests -q` (AST checker: safe pandas code, the demo scripts and a real live `analysis.py` pass;
+`os.system`, `subprocess`, `socket`, `open('/etc/passwd')`, `eval`, URLs and dunder tricks are blocked; plus the
+executor's env, timeout, output cap and runtime guard, input/output checks and the rate limiter).
+
 ## Daily run limit
 
 The public app spends on the OpenAI key, so it allows **3 live runs per day** (`MAX_RUNS_PER_DAY`; `0` = no
@@ -121,7 +139,7 @@ resets at midnight India time; demo mode is free and not counted. The sidebar sh
 - [x] Human approval step works, and a follow-up question continues the same session
 - [x] Stretch: SelectorGroupChat (LLM picks the speaker), Excel files with multiple sheets, one-page PDF report
 
-`python test_offline.py` checks all of these without an API key.
+`python test_offline.py` checks all of these without an API key; `python -m pytest tests -q` checks the guardrails.
 
 ## Run locally (Windows)
 
@@ -176,7 +194,9 @@ data_utils.py       stage CSV/Excel into the sandbox, schema for the agents
 report.py           parse the answer, PDF export, reproducibility re-run
 demo.py             scripted model for offline demo / tests
 usage_guard.py      daily run limit (MAX_RUNS_PER_DAY, default 3, resets at midnight IST)
+guardrails.py       input, prompt-injection, code-sandbox, rate and output guardrails (see "Guardrails")
 cli.py              terminal version with UserProxyAgent
 test_offline.py     checklist tests (no API key)
+tests/              pytest guardrail tests (python -m pytest tests -q)
 Dockerfile, docker-compose*.yml, deploy/datapilot.caddy   VPS deployment
 ```

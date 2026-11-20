@@ -12,6 +12,7 @@ from dotenv import load_dotenv
 
 ROOT = Path(__file__).resolve().parent
 load_dotenv(ROOT / ".env")
+LLM_MAX_TOKENS = int(os.getenv("LLM_MAX_TOKENS", "4096") or 4096)  # guardrail: max output tokens per model call
 
 # Model capabilities we rely on. Passing this explicitly lets any model name work,
 # including names newer than the installed autogen-ext release.
@@ -95,12 +96,14 @@ def make_model_client(model: str | None = None):
         from autogen_ext.models.anthropic import AnthropicChatCompletionClient
 
         return AnthropicChatCompletionClient(
-            model=model, api_key=api_key, model_info=_MODEL_INFO, temperature=temperature, max_tokens=4096
+            model=model, api_key=api_key, model_info=_MODEL_INFO, temperature=temperature,
+            max_tokens=LLM_MAX_TOKENS
         )
 
     from autogen_ext.models.openai import OpenAIChatCompletionClient
 
-    kwargs = dict(model=model, api_key=api_key, model_info=_MODEL_INFO, temperature=temperature)
+    kwargs = dict(model=model, api_key=api_key, model_info=_MODEL_INFO, temperature=temperature,
+                  max_tokens=LLM_MAX_TOKENS)  # guardrail: cap output tokens per call
     if base_url:
         kwargs["base_url"] = base_url
     return OpenAIChatCompletionClient(**kwargs)
