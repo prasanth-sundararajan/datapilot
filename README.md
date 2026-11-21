@@ -200,3 +200,7 @@ test_offline.py     checklist tests (no API key)
 tests/              pytest guardrail tests (python -m pytest tests -q)
 Dockerfile, docker-compose*.yml, deploy/datapilot.caddy   VPS deployment
 ```
+
+## License
+
+[MIT](LICENSE) © Prasanth Sundararajan
